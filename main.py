@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 # --- 1. Читаем переменные окружения ---
 TOKEN = os.getenv("HJRSCANNER_TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+BASE_WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Теперь это базовый URL
 SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 
 if not TOKEN:
@@ -51,13 +51,15 @@ def webhook():
 # --- 4. Устанавливаем вебхук при старте ---
 # Этот блок выполняется автоматически при запуске Gunicorn
 log.info("Запуск HJR-Scanner в режиме Webhook (production)...")
-if not WEBHOOK_URL:
+if not BASE_WEBHOOK_URL:
     log.critical("КРИТИЧЕСКАЯ ОШИБКА: WEBHOOK_URL не задан, вебхук не будет установлен.")
 else:
+    # --- ИСПРАВЛЕНО: Формируем полный URL с токеном ---
+    full_webhook_url = f"{BASE_WEBHOOK_URL.strip('/')}/{TOKEN}"
     try:
         bot.remove_webhook()
         time.sleep(0.5)
-        bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET)
-        log.info(f"Вебхук успешно установлен на: {WEBHOOK_URL}")
+        bot.set_webhook(url=full_webhook_url, secret_token=SECRET)
+        log.info(f"Вебхук успешно установлен на: {full_webhook_url}")
     except Exception as e:
         log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить вебхук. {e}")
