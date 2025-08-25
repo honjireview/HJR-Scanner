@@ -11,7 +11,10 @@ log = logging.getLogger(__name__)
 def get_db_connection():
     """Устанавливает и возвращает соединение с базой данных."""
     try:
+        db_url_present = bool(os.getenv("DATABASE_URL"))
+        log.debug("Инициализация подключения к БД: url_present=%s", db_url_present)
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        log.debug("Подключение к БД установлено")
         return conn
     except psycopg2.OperationalError as e:
         log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось подключиться к базе данных. {e}")
@@ -24,6 +27,7 @@ def init_db():
     """
     conn = get_db_connection()
     if not conn:
+        log.error("Инициализация БД пропущена: нет соединения")
         return
 
     try:
@@ -61,6 +65,7 @@ def init_db():
         log.error(f"Ошибка при инициализации схемы БД: {e}")
     finally:
         conn.close()
+        log.debug("Соединение с БД закрыто после init_db()")
 
 def log_new_message(message):
     """
@@ -68,6 +73,7 @@ def log_new_message(message):
     """
     conn = get_db_connection()
     if not conn:
+        log.error("log_new_message: нет соединения с БД")
         return
 
     try:
@@ -118,6 +124,7 @@ def log_new_message(message):
         log.error(f"Ошибка при логировании нового сообщения {message.message_id}: {e}")
     finally:
         conn.close()
+        log.debug("Соединение с БД закрыто после log_new_message()")
 
 def log_edited_message(message):
     """
@@ -158,3 +165,4 @@ def log_edited_message(message):
         log.error(f"Ошибка при логировании изменения сообщения {message.message_id}: {e}")
     finally:
         conn.close()
+        log.debug("Соединение с БД закрыто после log_edited_message()")
