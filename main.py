@@ -4,7 +4,7 @@ import logging
 import database
 from handlers import register_handlers
 import os
-import json
+import time
 from flask import Flask, request, abort
 from telebot import types
 
@@ -22,7 +22,7 @@ SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 
 if not TOKEN:
     log.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменная окружения HJRSCANNER_TELEGRAM_TOKEN не задана.")
-    exit() # Завершаем работу, если нет токена
+    exit()
 
 # --- 2. Инициализация ---
 database.init_db()
@@ -35,7 +35,6 @@ register_handlers(bot)
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
-        # Проверка секрета (если задан)
         if SECRET:
             header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if header_secret != SECRET:
@@ -49,24 +48,16 @@ def webhook():
     else:
         abort(403)
 
-# --- 4. Устанавливаем вебхук при старте (если мы не на локальной машине) ---
-# Этот блок выполняется только при запуске на сервере
-if __name__ != "__main__":
-    log.info("Запуск HJR-Scanner в режиме Gunicorn (production)...")
-    if not WEBHOOK_URL:
-        log.critical("КРИТИЧЕСКАЯ ОШИБКА: WEBHOOK_URL не задан, вебхук не будет установлен.")
-    else:
-        try:
-            bot.remove_webhook()
-            time.sleep(0.5)
-            bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET)
-            log.info(f"Вебхук успешно установлен на: {WEBHOOK_URL}")
-        except Exception as e:
-            log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить вебхук. {e}")
-
-# --- 5. Локальный запуск для отладки (если нужно) ---
-# Чтобы запустить локально, выполните "python main.py"
-if __name__ == "__main__":
-    log.info("Запуск HJR-Scanner в режиме Polling (local debug)...")
-    bot.remove_webhook()
-    bot.infinity_polling()
+# --- 4. Устанавливаем вебхук при старте ---
+# Этот блок выполняется автоматически при запуске Gunicorn
+log.info("Запуск HJR-Scanner в режиме Webhook (production)...")
+if not WEBHOOK_URL:
+    log.critical("КРИТИЧЕСКАЯ ОШИБКА: WEBHOOK_URL не задан, вебхук не будет установлен.")
+else:
+    try:
+        bot.remove_webhook()
+        time.sleep(0.5)
+        bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET)
+        log.info(f"Вебхук успешно установлен на: {WEBHOOK_URL}")
+    except Exception as e:
+        log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить вебхук. {e}")
