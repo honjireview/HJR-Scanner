@@ -1,0 +1,9 @@
+# nixpacks.toml
+[phases.setup]
+# optional, if you need a specific version
+
+[phases.install]
+# Nixpacks will auto-install from requirements.txt in the project root
+
+[start]
+cmd = "python main.py"
