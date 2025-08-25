@@ -4,6 +4,3 @@
 
 [phases.install]
 # Nixpacks will auto-install from requirements.txt in the project root
-
-[start]
-cmd = "python main.py"
