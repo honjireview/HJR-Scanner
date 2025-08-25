@@ -22,8 +22,7 @@ def get_db_connection():
 
 def init_db():
     """
-    Проверяет и создает таблицу message_log, если она не существует.
-    Это делает бота самодостаточным.
+    Проверяет и создает все необходимые таблицы, если они не существуют.
     """
     conn = get_db_connection()
     if not conn:
@@ -33,6 +32,7 @@ def init_db():
     try:
         with conn.cursor() as cur:
             log.info("Проверка и инициализация схемы базы данных...")
+            # Таблица логов сообщений
             cur.execute("""
                         CREATE TABLE IF NOT EXISTS message_log (
                                                                    internal_id BIGSERIAL PRIMARY KEY,
@@ -59,6 +59,22 @@ def init_db():
                                                                    UNIQUE (chat_id, message_id)
                             );
                         """)
+
+            # Новая таблица для логов участников
+            cur.execute("""
+                        CREATE TABLE IF NOT EXISTS chat_member_log (
+                                                                       log_id BIGSERIAL PRIMARY KEY,
+                                                                       event_timestamp TIMESTAMPTZ NOT NULL,
+                                                                       chat_id BIGINT NOT NULL,
+                                                                       chat_title TEXT,
+                                                                       user_id BIGINT NOT NULL,
+                                                                       user_first_name TEXT,
+                                                                       user_username TEXT,
+                                                                       event_type TEXT NOT NULL,
+                                                                       actor_user_id BIGINT
+                        );
+                        """)
+
             conn.commit()
             log.info("Схема базы данных успешно проверена/инициализирована.")
     except Exception as e:
@@ -66,6 +82,55 @@ def init_db():
     finally:
         conn.close()
         log.debug("Соединение с БД закрыто после init_db()")
+
+def log_chat_member_update(update):
+    """
+    Логирует событие входа, выхода или изменения статуса участника чата.
+    """
+    conn = get_db_connection()
+    if not conn:
+        log.error("log_chat_member_update: нет соединения с БД")
+        return
+
+    try:
+        with conn.cursor() as cur:
+            chat = update.chat
+            user = update.new_chat_member.user
+            actor_id = update.from_user.id
+
+            old_status = update.old_chat_member.status
+            new_status = update.new_chat_member.status
+
+            event_type = "unknown"
+            if old_status in ['left', 'kicked'] and new_status in ['member', 'administrator', 'creator']:
+                event_type = "joined"
+            elif old_status in ['member', 'administrator', 'creator'] and new_status in ['left', 'kicked']:
+                event_type = "left"
+
+            # Логируем только явный вход или выход
+            if event_type not in ["joined", "left"]:
+                log.debug(f"Пропущено событие изменения статуса с '{old_status}' на '{new_status}' для user_id {user.id}")
+                return
+
+            cur.execute(
+                """
+                INSERT INTO chat_member_log (
+                    event_timestamp, chat_id, chat_title, user_id, user_first_name,
+                    user_username, event_type, actor_user_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                """,
+                (
+                    datetime.fromtimestamp(update.date), chat.id, chat.title, user.id, user.first_name,
+                    user.username, event_type, actor_id
+                )
+            )
+            conn.commit()
+            log.info(f"Событие '{event_type}' для пользователя {user.id} в чате {chat.id} успешно залогировано.")
+    except Exception as e:
+        log.error(f"Ошибка при логировании события с участником чата: {e}")
+    finally:
+        conn.close()
+        log.debug("Соединение с БД закрыто после log_chat_member_update()")
 
 def log_new_message(message):
     """
@@ -78,15 +143,20 @@ def log_new_message(message):
 
     try:
         with conn.cursor() as cur:
-            # Извлечение данных о топике
             topic_id, topic_name = (message.message_thread_id, "General") if message.is_topic_message else (None, None)
-            if message.reply_to_message and message.reply_to_message.forum_topic_created:
+            if hasattr(message, 'reply_to_message') and message.reply_to_message and hasattr(message.reply_to_message, 'forum_topic_created') and message.reply_to_message.forum_topic_created:
                 topic_name = message.reply_to_message.forum_topic_created.name
 
-            # Извлечение данных о пересылке
             fwd_chat_id, fwd_msg_id = (message.forward_from_chat.id, message.forward_from_message_id) if message.forward_from_chat else (None, None)
 
-            # История изменений
+            file_id = None
+            if message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
+                media = getattr(message, message.content_type)
+                if isinstance(media, list): # Для фото
+                    file_id = media[-1].file_id
+                elif hasattr(media, 'file_id'):
+                    file_id = media.file_id
+
             initial_history = json.dumps([{
                 "timestamp": message.date,
                 "text": message.text or message.caption
@@ -100,19 +170,13 @@ def log_new_message(message):
                     text, content_type, file_id, reply_to_message_id,
                     forward_from_chat_id, forward_from_message_id,
                     created_at, last_edited_at, edit_history, logged_at
-                ) VALUES (
-                             %s, %s, %s, %s, %s, %s,
-                             %s, %s, %s, %s,
-                             %s, %s, %s, %s,
-                             %s, %s,
-                             %s, %s, %s, %s
-                         )
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (chat_id, message_id) DO NOTHING;
                 """,
                 (
                     message.message_id, message.chat.id, message.chat.type, message.chat.title, topic_id, topic_name,
                     message.from_user.id, message.from_user.username, message.from_user.first_name, message.from_user.is_bot,
-                    message.text or message.caption, message.content_type, getattr(message, message.content_type, [{}])[0].get('file_id') if hasattr(message, message.content_type) and isinstance(getattr(message, message.content_type), list) and getattr(message, message.content_type) else None,
+                    message.text or message.caption, message.content_type, file_id,
                     message.reply_to_message.message_id if message.reply_to_message else None,
                     fwd_chat_id, fwd_msg_id,
                     datetime.fromtimestamp(message.date), None, initial_history, datetime.utcnow()
@@ -125,6 +189,7 @@ def log_new_message(message):
     finally:
         conn.close()
         log.debug("Соединение с БД закрыто после log_new_message()")
+
 
 def log_edited_message(message):
     """
@@ -141,7 +206,6 @@ def log_edited_message(message):
                 "text": message.text or message.caption
             })
 
-            # jsonb_append в PostgreSQL 14+
             cur.execute(
                 """
                 UPDATE message_log
