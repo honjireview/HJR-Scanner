@@ -1,7 +1,6 @@
 # main.py
 import telebot
 import logging
-import config
 import database
 from handlers import register_handlers
 import os
