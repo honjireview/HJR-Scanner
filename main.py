@@ -5,7 +5,7 @@ import database
 from handlers import register_handlers
 import os
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from flask import Flask, request, abort
 from telebot import types
 
 # Настройка системного логирования
@@ -15,97 +15,58 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-def main():
-    """
-    Главная функция запуска бота.
-    """
-    log.info("Запуск HJR-Scanner (webhook mode)...")
+# --- 1. Читаем переменные окружения ---
+TOKEN = os.getenv("HJRSCANNER_TELEGRAM_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 
-    # 0. Читаем переменные окружения
-    token = os.getenv("HJRSCANNER_TELEGRAM_TOKEN")
-    webhook_url = os.getenv("WEBHOOK_URL")
-    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
-    port = int(os.getenv("PORT", "8080"))
+if not TOKEN:
+    log.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменная окружения HJRSCANNER_TELEGRAM_TOKEN не задана.")
+    exit() # Завершаем работу, если нет токена
 
-    if not token:
-        log.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменная окружения HJRSCANNER_TELEGRAM_TOKEN не задана.")
-        return
-    if not webhook_url or not webhook_url.startswith("https://"):
-        log.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменная WEBHOOK_URL не задана или не https.")
-        return
+# --- 2. Инициализация ---
+database.init_db()
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
+register_handlers(bot)
 
-    # 1. Инициализация базы данных
-    database.init_db()
+# --- 3. Создаем маршрут для вебхука ---
+# Telegram будет отправлять обновления на этот URL
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        # Проверка секрета (если задан)
+        if SECRET:
+            header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            if header_secret != SECRET:
+                log.warning("Отклонён запрос: неверный X-Telegram-Bot-Api-Secret-Token")
+                abort(403)
 
-    # 2. Создание и проверка экземпляра бота
-    try:
-        bot = telebot.TeleBot(token)
-        bot_info = bot.get_me()
-        log.info(f"Бот @{bot_info.username} успешно инициализирован.")
-    except Exception as e:
-        log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Неверный токен или нет связи с API Telegram. {e}")
-        return
+        json_string = request.get_data().decode('utf-8')
+        update = types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        abort(403)
 
-    # 3. Регистрация обработчиков
-    register_handlers(bot)
+# --- 4. Устанавливаем вебхук при старте (если мы не на локальной машине) ---
+# Этот блок выполняется только при запуске на сервере
+if __name__ != "__main__":
+    log.info("Запуск HJR-Scanner в режиме Gunicorn (production)...")
+    if not WEBHOOK_URL:
+        log.critical("КРИТИЧЕСКАЯ ОШИБКА: WEBHOOK_URL не задан, вебхук не будет установлен.")
+    else:
+        try:
+            bot.remove_webhook()
+            time.sleep(0.5)
+            bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET)
+            log.info(f"Вебхук успешно установлен на: {WEBHOOK_URL}")
+        except Exception as e:
+            log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить вебхук. {e}")
 
-    # 4. Настройка вебхука
-    try:
-        bot.remove_webhook()
-        if secret:
-            bot.set_webhook(url=webhook_url, secret_token=secret)
-            log.info("Webhook установлен с проверкой секретного токена.")
-        else:
-            bot.set_webhook(url=webhook_url)
-            log.info("Webhook установлен без секретного токена.")
-    except Exception as e:
-        log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить вебхук. {e}")
-        return
-
-    # 5. Встроенный HTTP-сервер для приёма апдейтов от Telegram
-    class TelegramWebhookHandler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            # Проверка секрета (если задан)
-            if secret:
-                header_secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
-                if header_secret != secret:
-                    log.warning("Отклонён запрос: неверный X-Telegram-Bot-Api-Secret-Token")
-                    self.send_response(403)
-                    self.end_headers()
-                    return
-            content_length = int(self.headers.get("Content-Length", "0"))
-            if content_length == 0:
-                self.send_response(400)
-                self.end_headers()
-                return
-            body = self.rfile.read(content_length)
-            try:
-                data = json.loads(body.decode("utf-8"))
-                update = types.Update.de_json(data)
-                # Передаём апдейт боту
-                bot.process_new_updates([update])
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"OK")
-            except Exception as e:
-                log.error(f"Ошибка обработки апдейта: {e}")
-                self.send_response(500)
-                self.end_headers()
-
-        # Убираем лишний шум в логах HTTP-сервера
-        def log_message(self, format, *args):
-            return
-
-    server_address = ("0.0.0.0", port)
-    httpd = HTTPServer(server_address, TelegramWebhookHandler)
-    log.info(f"HTTP сервер запущен и слушает порт {port}. Ожидаем апдейты от Telegram...")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        httpd.server_close()
-        log.info("HTTP сервер остановлен.")
-
-if __name__ == '__main__':
-    main()
+# --- 5. Локальный запуск для отладки (если нужно) ---
+# Чтобы запустить локально, выполните "python main.py"
+if __name__ == "__main__":
+    log.info("Запуск HJR-Scanner в режиме Polling (local debug)...")
+    bot.remove_webhook()
+    bot.infinity_polling()
