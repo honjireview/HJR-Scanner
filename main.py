@@ -6,6 +6,7 @@ from handlers import register_handlers
 import os
 from flask import Flask, request, abort
 from telebot import types
+import json # Импортируем json для красивого вывода
 
 # Устанавливаем уровень логирования
 logging.basicConfig(
@@ -35,26 +36,45 @@ register_handlers(bot)
 # Теперь он не содержит токена в URL
 @app.route('/telegram/hjr-scanner', methods=['POST'])
 def webhook():
+    log.info("--- START WEBHOOK PROCESSING ---")
     log.debug("!!! Webhook endpoint '/telegram/hjr-scanner' вызван!")
+
+    # Дебаг: Выводим все заголовки запроса, чтобы видеть, что присылает Cloudflare
+    log.debug(f"Входящие заголовки: {dict(request.headers)}")
+
     try:
         if request.headers.get('content-type') == 'application/json':
+            log.debug("Проверка Content-Type: Успешно (application/json).")
+
+            # Дебаг: Проверка секретного токена
             if SECRET:
                 header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+                log.debug(f"Проверка Secret Token. Ожидаемый: ***{SECRET[-4:]}, Полученный: {header_secret}")
                 if header_secret != SECRET:
                     log.warning(f"Отклонён запрос: неверный Secret Token.")
                     abort(403)
+                log.debug("Проверка Secret Token: Успешно.")
 
             json_string = request.get_data().decode('utf-8')
-            log.debug(f"Request Body (raw): {json_string}")
+            # Дебаг: Выводим тело запроса в форматированном виде
+            try:
+                pretty_json = json.dumps(json.loads(json_string), indent=2, ensure_ascii=False)
+                log.debug(f"Request Body (formatted):\n{pretty_json}")
+            except json.JSONDecodeError:
+                log.warning(f"Не удалось отформатировать JSON, показываю как есть: {json_string}")
 
+            log.debug("Начинаю обработку update'а библиотекой pyTelegramBotAPI...")
             update = types.Update.de_json(json_string)
             bot.process_new_updates([update])
+            log.info("Обработка update'а успешно завершена.")
+            log.info("--- END WEBHOOK PROCESSING ---")
             return '', 200
         else:
             log.error(f"Отклонён запрос: неверный Content-Type: {request.headers.get('content-type')}")
             abort(403)
     except Exception as e:
         log.error(f"КРИТИЧЕСКАЯ ОШИБКА внутри обработчика webhook: {e}", exc_info=True)
+        log.info("--- END WEBHOOK PROCESSING WITH ERROR ---")
         return "Error", 500
 
 # Маршрут для проверки работоспособности сервера
