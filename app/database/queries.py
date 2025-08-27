@@ -1,5 +1,4 @@
 # app/database/queries.py
-# Весь код из старого database.py перенесен сюда без изменений.
 import os
 import psycopg2
 import psycopg2.extras
@@ -20,14 +19,11 @@ def get_db_connection():
         return None
 
 def init_db():
-    """
-    Проверяет и создает все необходимые таблицы, если они не существуют.
-    """
+    # ... (код init_db остается без изменений) ...
     conn = get_db_connection()
     if not conn:
         log.error("Инициализация БД пропущена: нет соединения")
         return
-
     try:
         with conn.cursor() as cur:
             log.info("Проверка и инициализация схемы базы данных...")
@@ -57,8 +53,103 @@ def init_db():
             conn.close()
             log.debug("Соединение с БД закрыто после init_db()")
 
-# ... (остальные функции из вашего database.py: log_chat_member_update, log_new_message, log_edited_message) ...
-# Я их здесь сократил для краткости, но вы должны перенести их полностью.
+
+def log_new_message(message):
+    """
+    Извлекает всю возможную информацию из нового сообщения или поста и сохраняет ее в БД.
+    """
+    conn = get_db_connection()
+    if not conn:
+        log.error("log_new_message: нет соединения с БД")
+        return
+
+    try:
+        with conn.cursor() as cur:
+            # --- ИСПРАВЛЕННАЯ И УЛУЧШЕННАЯ ЛОГИКА ---
+            topic_id = None
+            topic_name = None
+            if hasattr(message, 'is_topic_message') and message.is_topic_message:
+                topic_id = message.message_thread_id
+                # Безопасно пытаемся получить имя топика, если это ответ на его создание
+                if (message.reply_to_message and
+                        hasattr(message.reply_to_message, 'forum_topic_created') and
+                        message.reply_to_message.forum_topic_created):
+                    topic_name = message.reply_to_message.forum_topic_created.name
+                else:
+                    topic_name = "General" # Имя по умолчанию для топика
+
+            fwd_chat_id, fwd_msg_id = (message.forward_from_chat.id, message.forward_from_message_id) if message.forward_from_chat else (None, None)
+
+            file_id = None
+            if message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
+                media = getattr(message, message.content_type)
+                if isinstance(media, list): # Для фото
+                    file_id = media[-1].file_id
+                elif hasattr(media, 'file_id'):
+                    file_id = media.file_id
+
+            initial_history = json.dumps([{
+                "timestamp": message.date,
+                "text": message.text or message.caption
+            }])
+
+            # Для постов в каналах у 'from_user' нет данных, он None.
+            # Вместо этого используется 'author_signature' или просто информация о канале.
+            # Для унификации оставляем поля author_* как NULL для анонимных постов.
+            author = message.from_user
+            author_id = author.id if author else None
+            author_username = author.username if author else None
+            author_first_name = author.first_name if author else (message.author_signature if hasattr(message, 'author_signature') else None)
+            author_is_bot = author.is_bot if author else None
+            # --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ---
+
+            cur.execute(
+                """
+                INSERT INTO message_log (
+                    message_id, chat_id, chat_type, chat_title, topic_id, topic_name,
+                    author_user_id, author_username, author_first_name, author_is_bot,
+                    text, content_type, file_id, reply_to_message_id,
+                    forward_from_chat_id, forward_from_message_id,
+                    created_at, last_edited_at, edit_history, logged_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (chat_id, message_id) DO NOTHING;
+                """,
+                (
+                    message.message_id, message.chat.id, message.chat.type, message.chat.title, topic_id, topic_name,
+                    author_id, author_username, author_first_name, author_is_bot,
+                    message.text or message.caption, message.content_type, file_id,
+                    message.reply_to_message.message_id if message.reply_to_message else None,
+                    fwd_chat_id, fwd_msg_id,
+                    datetime.fromtimestamp(message.date), None, initial_history, datetime.utcnow()
+                )
+            )
+            conn.commit()
+            log.info(f"Сообщение/пост {message.message_id} из чата {message.chat.id} успешно залогировано.")
+    except Exception as e:
+        log.error(f"Ошибка при логировании нового сообщения {message.message_id}: {e}", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
+
+# ... (остальные функции: log_edited_message, log_chat_member_update) ...
+# Их код можно оставить без изменений, но я привожу его для полноты
+def log_edited_message(message):
+    """Находит существующую запись о сообщении и добавляет новую версию в историю изменений."""
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            new_edit_entry = json.dumps({"timestamp": message.edit_date, "text": message.text or message.caption})
+            cur.execute(
+                "UPDATE message_log SET text = %s, last_edited_at = %s, edit_history = edit_history || %s::jsonb WHERE chat_id = %s AND message_id = %s;",
+                (message.text or message.caption, datetime.fromtimestamp(message.edit_date), new_edit_entry, message.chat.id, message.message_id)
+            )
+            conn.commit()
+            log.info(f"Изменение сообщения/поста {message.message_id} из чата {message.chat.id} успешно залогировано.")
+    except Exception as e:
+        log.error(f"Ошибка при логировании изменения сообщения {message.message_id}: {e}", exc_info=True)
+    finally:
+        if conn: conn.close()
 
 def log_chat_member_update(update):
     """Логирует событие входа, выхода или изменения статуса участника чата."""
@@ -79,47 +170,5 @@ def log_chat_member_update(update):
             conn.commit()
     except Exception as e:
         log.error(f"Ошибка при логировании события с участником чата: {e}")
-    finally:
-        if conn: conn.close()
-
-def log_new_message(message):
-    """Извлекает всю возможную информацию из нового сообщения и сохраняет ее в БД."""
-    conn = get_db_connection()
-    if not conn: return
-    try:
-        with conn.cursor() as cur:
-            topic_id, topic_name = (message.message_thread_id, "General") if message.is_topic_message else (None, None)
-            if hasattr(message, 'reply_to_message') and message.reply_to_message and hasattr(message.reply_to_message, 'forum_topic_created'):
-                topic_name = message.reply_to_message.forum_topic_created.name
-            fwd_chat_id, fwd_msg_id = (message.forward_from_chat.id, message.forward_from_message_id) if message.forward_from_chat else (None, None)
-            file_id = None
-            if message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
-                media = getattr(message, message.content_type)
-                file_id = media[-1].file_id if isinstance(media, list) else (media.file_id if hasattr(media, 'file_id') else None)
-            initial_history = json.dumps([{"timestamp": message.date, "text": message.text or message.caption}])
-            cur.execute(
-                "INSERT INTO message_log (message_id, chat_id, chat_type, chat_title, topic_id, topic_name, author_user_id, author_username, author_first_name, author_is_bot, text, content_type, file_id, reply_to_message_id, forward_from_chat_id, forward_from_message_id, created_at, last_edited_at, edit_history, logged_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (chat_id, message_id) DO NOTHING;",
-                (message.message_id, message.chat.id, message.chat.type, message.chat.title, topic_id, topic_name, message.from_user.id, message.from_user.username, message.from_user.first_name, message.from_user.is_bot, message.text or message.caption, message.content_type, file_id, message.reply_to_message.message_id if message.reply_to_message else None, fwd_chat_id, fwd_msg_id, datetime.fromtimestamp(message.date), None, initial_history, datetime.utcnow())
-            )
-            conn.commit()
-    except Exception as e:
-        log.error(f"Ошибка при логировании нового сообщения {message.message_id}: {e}")
-    finally:
-        if conn: conn.close()
-
-def log_edited_message(message):
-    """Находит существующую запись о сообщении и добавляет новую версию в историю изменений."""
-    conn = get_db_connection()
-    if not conn: return
-    try:
-        with conn.cursor() as cur:
-            new_edit_entry = json.dumps({"timestamp": message.edit_date, "text": message.text or message.caption})
-            cur.execute(
-                "UPDATE message_log SET text = %s, last_edited_at = %s, edit_history = edit_history || %s::jsonb WHERE chat_id = %s AND message_id = %s;",
-                (message.text or message.caption, datetime.fromtimestamp(message.edit_date), new_edit_entry, message.chat.id, message.message_id)
-            )
-            conn.commit()
-    except Exception as e:
-        log.error(f"Ошибка при логировании изменения сообщения {message.message_id}: {e}")
     finally:
         if conn: conn.close()
