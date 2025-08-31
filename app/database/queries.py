@@ -6,6 +6,8 @@ import logging
 import json
 from datetime import datetime
 from sshtunnel import SSHTunnelForwarder
+from paramiko import RSAKey # <<< ДОБАВЛЯЕМ НОВЫЙ ИМПОРТ
+import io # <<< ДОБАВЛЯЕМ НОВЫЙ ИМПОРТ
 
 log = logging.getLogger(__name__)
 
@@ -26,13 +28,6 @@ def start_ssh_tunnel():
         ssh_user = os.getenv("SSH_USER")
         ssh_key_string = os.getenv("SSH_PRIVATE_KEY")
 
-        # --- НАЧАЛО БЛОКА ОТЛАДКИ ---
-        log.info(f"Проверка переменных SSH:")
-        log.info(f"SSH_HOST: {'Установлен' if ssh_host else 'НЕ НАЙДЕН'}")
-        log.info(f"SSH_USER: {'Установлен' if ssh_user else 'НЕ НАЙДЕН'}")
-        log.info(f"SSH_PRIVATE_KEY: {'Ключ найден' if ssh_key_string else 'КЛЮЧ НЕ НАЙДЕН!'}")
-        # --- КОНЕЦ БЛОКА ОТЛАДКИ ---
-
         db_host_remote = '127.0.0.1'
         db_port_remote = 5432
 
@@ -40,10 +35,18 @@ def start_ssh_tunnel():
             log.critical("КРИТИЧЕСКАЯ ОШИБКА: Одна или несколько SSH-переменных (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY) не заданы!")
             return
 
+        # --- НАЧАЛО НОВОЙ ЛОГИКИ ОБРАБОТКИ КЛЮЧА ---
+        # Создаем "виртуальный файл" в памяти из строки с ключом
+        pkey_file = io.StringIO(ssh_key_string)
+        # Читаем ключ из этого виртуального файла
+        private_key = RSAKey.from_private_key(pkey_file)
+        log.info("SSH-ключ успешно прочитан и подготовлен.")
+        # --- КОНЕЦ НОВОЙ ЛОГИКИ ОБРАБОТКИ КЛЮЧА ---
+
         tunnel_server = SSHTunnelForwarder(
             (ssh_host, 22),
             ssh_username=ssh_user,
-            ssh_pkey=ssh_key_string, # Используем ключ вместо пароля
+            ssh_pkey=private_key, # <<< ПЕРЕДАЕМ УЖЕ ОБРАБОТАННЫЙ КЛЮЧ
             remote_bind_address=(db_host_remote, db_port_remote)
         )
 
@@ -54,18 +57,17 @@ def start_ssh_tunnel():
         log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось запустить SSH-туннель. {e}", exc_info=True)
         tunnel_server = None
 
-
-
 def get_db_connection():
     """Устанавливает и возвращает соединение с БД через SSH-туннель."""
     global tunnel_server
 
     if not (tunnel_server and tunnel_server.is_active):
-        log.error("Соединение с БД невозможно: SSH-туннель не активен.")
-        return None
+        start_ssh_tunnel() # Попытаемся перезапустить туннель, если он неактивен
+        if not (tunnel_server and tunnel_server.is_active):
+            log.error("Соединение с БД невозможно: SSH-туннель не активен.")
+            return None
 
     try:
-        # Данные для подключения к БД (уже внутри туннеля)
         db_user = os.getenv("DB_USER")
         db_password = os.getenv("DB_PASSWORD")
         db_name = os.getenv("DB_NAME")
@@ -76,7 +78,7 @@ def get_db_connection():
 
         conn = psycopg2.connect(
             host='127.0.0.1',
-            port=tunnel_server.local_bind_port, # Подключаемся к локальному порту туннеля
+            port=tunnel_server.local_bind_port,
             user=db_user,
             password=db_password,
             dbname=db_name
@@ -88,10 +90,7 @@ def get_db_connection():
         return None
 
 # --- Остальные функции (log_new_message, init_db и т.д.) остаются без изменений ---
-# ... (вставьте сюда ваш остальной код из файла queries.py, начиная с def init_db():) ...
-
 def init_db():
-    # ... (код init_db остается без изменений) ...
     conn = get_db_connection()
     if not conn:
         log.error("Инициализация БД пропущена: нет соединения")
@@ -127,9 +126,6 @@ def init_db():
 
 
 def log_new_message(message):
-    """
-    Извлекает всю возможную информацию из нового сообщения или поста и сохраняет ее в БД.
-    """
     conn = get_db_connection()
     if not conn:
         log.error("log_new_message: нет соединения с БД")
@@ -137,25 +133,23 @@ def log_new_message(message):
 
     try:
         with conn.cursor() as cur:
-            # --- ИСПРАВЛЕННАЯ И УЛУЧШЕННАЯ ЛОГИКА ---
             topic_id = None
             topic_name = None
             if hasattr(message, 'is_topic_message') and message.is_topic_message:
                 topic_id = message.message_thread_id
-                # Безопасно пытаемся получить имя топика, если это ответ на его создание
                 if (message.reply_to_message and
                         hasattr(message.reply_to_message, 'forum_topic_created') and
                         message.reply_to_message.forum_topic_created):
                     topic_name = message.reply_to_message.forum_topic_created.name
                 else:
-                    topic_name = "General" # Имя по умолчанию для топика
+                    topic_name = "General"
 
             fwd_chat_id, fwd_msg_id = (message.forward_from_chat.id, message.forward_from_message_id) if message.forward_from_chat else (None, None)
 
             file_id = None
             if message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
                 media = getattr(message, message.content_type)
-                if isinstance(media, list): # Для фото
+                if isinstance(media, list):
                     file_id = media[-1].file_id
                 elif hasattr(media, 'file_id'):
                     file_id = media.file_id
@@ -165,15 +159,11 @@ def log_new_message(message):
                 "text": message.text or message.caption
             }])
 
-            # Для постов в каналах у 'from_user' нет данных, он None.
-            # Вместо этого используется 'author_signature' или просто информация о канале.
-            # Для унификации оставляем поля author_* как NULL для анонимных постов.
             author = message.from_user
             author_id = author.id if author else None
             author_username = author.username if author else None
             author_first_name = author.first_name if author else (message.author_signature if hasattr(message, 'author_signature') else None)
             author_is_bot = author.is_bot if author else None
-            # --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ---
 
             cur.execute(
                 """
@@ -204,7 +194,6 @@ def log_new_message(message):
             conn.close()
 
 def log_edited_message(message):
-    """Находит существующую запись о сообщении и добавляет новую версию в историю изменений."""
     conn = get_db_connection()
     if not conn: return
     try:
@@ -222,7 +211,6 @@ def log_edited_message(message):
         if conn: conn.close()
 
 def log_chat_member_update(update):
-    """Логирует событие входа, выхода или изменения статуса участника чата."""
     conn = get_db_connection()
     if not conn: return
     try:
