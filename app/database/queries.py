@@ -15,38 +15,36 @@ log = logging.getLogger(__name__)
 tunnel_server = None
 
 def start_ssh_tunnel():
-    """Инициализирует и запускает SSH-туннель с использованием ключа."""
+    """Инициализирует и запускает SSH-туннель с использованием ключа, защищенного паролем."""
     global tunnel_server
     try:
         if tunnel_server and tunnel_server.is_active:
             log.info("SSH-туннель уже активен.")
             return
 
-        log.info("Запуск SSH-туннеля с использованием ключа...")
+        log.info("Запуск SSH-туннеля с использованием зашифрованного ключа...")
 
         ssh_host = os.getenv("SSH_HOST")
         ssh_user = os.getenv("SSH_USER")
         ssh_key_string = os.getenv("SSH_PRIVATE_KEY")
+        ssh_key_password = os.getenv("SSH_KEY_PASSWORD") # <<< ПОЛУЧАЕМ ПАРОЛЬ ОТ КЛЮЧА
 
         db_host_remote = '127.0.0.1'
         db_port_remote = 5432
 
-        if not all([ssh_host, ssh_user, ssh_key_string]):
-            log.critical("КРИТИЧЕСКАЯ ОШИБКА: Одна или несколько SSH-переменных (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY) не заданы!")
+        if not all([ssh_host, ssh_user, ssh_key_string, ssh_key_password]):
+            log.critical("КРИТИЧЕСКАЯ ОШИБКА: SSH-переменные (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_KEY_PASSWORD) не заданы!")
             return
 
-        # --- НАЧАЛО НОВОЙ ЛОГИКИ ОБРАБОТКИ КЛЮЧА ---
-        # Создаем "виртуальный файл" в памяти из строки с ключом
         pkey_file = io.StringIO(ssh_key_string)
-        # Читаем ключ из этого виртуального файла
-        private_key = RSAKey.from_private_key(pkey_file)
-        log.info("SSH-ключ успешно прочитан и подготовлен.")
-        # --- КОНЕЦ НОВОЙ ЛОГИКИ ОБРАБОТКИ КЛЮЧА ---
+        # <<< ПЕРЕДАЕМ ПАРОЛЬ ДЛЯ РАСШИФРОВКИ КЛЮЧА
+        private_key = RSAKey.from_private_key(pkey_file, password=ssh_key_password)
+        log.info("SSH-ключ успешно расшифрован и подготовлен.")
 
         tunnel_server = SSHTunnelForwarder(
             (ssh_host, 22),
             ssh_username=ssh_user,
-            ssh_pkey=private_key, # <<< ПЕРЕДАЕМ УЖЕ ОБРАБОТАННЫЙ КЛЮЧ
+            ssh_pkey=private_key,
             remote_bind_address=(db_host_remote, db_port_remote)
         )
 
