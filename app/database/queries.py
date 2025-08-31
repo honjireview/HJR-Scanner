@@ -13,33 +13,30 @@ log = logging.getLogger(__name__)
 tunnel_server = None
 
 def start_ssh_tunnel():
-    """Инициализирует и запускает SSH-туннель."""
+    """Инициализирует и запускает SSH-туннель с использованием ключа."""
     global tunnel_server
     try:
-        # Если туннель уже запущен, ничего не делаем
         if tunnel_server and tunnel_server.is_active:
             log.info("SSH-туннель уже активен.")
             return
 
-        log.info("Запуск SSH-туннеля...")
+        log.info("Запуск SSH-туннеля с использованием ключа...")
 
-        # Данные для SSH-подключения (берем из переменных окружения)
         ssh_host = os.getenv("SSH_HOST")
         ssh_user = os.getenv("SSH_USER")
-        ssh_password = os.getenv("SSH_PASSWORD")
+        ssh_key_string = os.getenv("SSH_PRIVATE_KEY")
 
-        # Данные для базы данных (берем из переменных окружения)
-        db_host_remote = '127.0.0.1' # На сервере ahost база данных доступна локально
-        db_port_remote = 5432       # Стандартный порт PostgreSQL
+        db_host_remote = '127.0.0.1'
+        db_port_remote = 5432
 
-        if not all([ssh_host, ssh_user, ssh_password]):
-            log.critical("КРИТИЧЕСКАЯ ОШИБКА: SSH-переменные (SSH_HOST, SSH_USER, SSH_PASSWORD) не заданы!")
+        if not all([ssh_host, ssh_user, ssh_key_string]):
+            log.critical("КРИТИЧЕСКАЯ ОШИБКА: SSH-переменные (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY) не заданы!")
             return
 
         tunnel_server = SSHTunnelForwarder(
             (ssh_host, 22),
             ssh_username=ssh_user,
-            ssh_password=ssh_password,
+            ssh_pkey=ssh_key_string, # <<< ИСПОЛЬЗУЕМ КЛЮЧ ВМЕСТО ПАРОЛЯ
             remote_bind_address=(db_host_remote, db_port_remote)
         )
 
