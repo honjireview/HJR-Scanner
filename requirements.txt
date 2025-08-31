@@ -4,3 +4,5 @@ python-dotenv
 Flask
 gunicorn
 sshtunnel
+paramiko==2.12.0
+cryptography==38.0.4
