@@ -26,17 +26,24 @@ def start_ssh_tunnel():
         ssh_user = os.getenv("SSH_USER")
         ssh_key_string = os.getenv("SSH_PRIVATE_KEY")
 
+        # --- НАЧАЛО БЛОКА ОТЛАДКИ ---
+        log.info(f"Проверка переменных SSH:")
+        log.info(f"SSH_HOST: {'Установлен' if ssh_host else 'НЕ НАЙДЕН'}")
+        log.info(f"SSH_USER: {'Установлен' if ssh_user else 'НЕ НАЙДЕН'}")
+        log.info(f"SSH_PRIVATE_KEY: {'Ключ найден' if ssh_key_string else 'КЛЮЧ НЕ НАЙДЕН!'}")
+        # --- КОНЕЦ БЛОКА ОТЛАДКИ ---
+
         db_host_remote = '127.0.0.1'
         db_port_remote = 5432
 
         if not all([ssh_host, ssh_user, ssh_key_string]):
-            log.critical("КРИТИЧЕСКАЯ ОШИБКА: SSH-переменные (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY) не заданы!")
+            log.critical("КРИТИЧЕСКАЯ ОШИБКА: Одна или несколько SSH-переменных (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY) не заданы!")
             return
 
         tunnel_server = SSHTunnelForwarder(
             (ssh_host, 22),
             ssh_username=ssh_user,
-            ssh_pkey=ssh_key_string, # <<< ИСПОЛЬЗУЕМ КЛЮЧ ВМЕСТО ПАРОЛЯ
+            ssh_pkey=ssh_key_string, # Используем ключ вместо пароля
             remote_bind_address=(db_host_remote, db_port_remote)
         )
 
@@ -46,6 +53,7 @@ def start_ssh_tunnel():
     except Exception as e:
         log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось запустить SSH-туннель. {e}", exc_info=True)
         tunnel_server = None
+
 
 
 def get_db_connection():
