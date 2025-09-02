@@ -15,36 +15,31 @@ log = logging.getLogger(__name__)
 tunnel_server = None
 
 def start_ssh_tunnel():
-    """Инициализирует и запускает SSH-туннель с использованием ключа, защищенного паролем."""
+    """Инициализирует и запускает SSH-туннель с использованием пароля."""
     global tunnel_server
     try:
         if tunnel_server and tunnel_server.is_active:
             log.info("SSH-туннель уже активен.")
             return
 
-        log.info("Запуск SSH-туннеля с использованием зашифрованного ключа...")
+        log.info("Запуск SSH-туннеля с использованием пароля...")
 
         ssh_host = os.getenv("SSH_HOST")
         ssh_user = os.getenv("SSH_USER")
-        ssh_key_string = os.getenv("SSH_PRIVATE_KEY")
-        ssh_key_password = os.getenv("SSH_KEY_PASSWORD") # <<< ПОЛУЧАЕМ ПАРОЛЬ ОТ КЛЮЧА
+        ssh_password = os.getenv("SSH_PASSWORD")
+        ssh_port = 30151 # <<< ИСПОЛЬЗУЕМ НОВЫЙ ПОРТ ОТ ТЕХПОДДЕРЖКИ
 
         db_host_remote = '127.0.0.1'
         db_port_remote = 5432
 
-        if not all([ssh_host, ssh_user, ssh_key_string, ssh_key_password]):
-            log.critical("КРИТИЧЕСКАЯ ОШИБКА: SSH-переменные (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_KEY_PASSWORD) не заданы!")
+        if not all([ssh_host, ssh_user, ssh_password]):
+            log.critical("КРИТИЧЕСКАЯ ОШИБКА: SSH-переменные (SSH_HOST, SSH_USER, SSH_PASSWORD) не заданы!")
             return
 
-        pkey_file = io.StringIO(ssh_key_string)
-        # <<< ПЕРЕДАЕМ ПАРОЛЬ ДЛЯ РАСШИФРОВКИ КЛЮЧА
-        private_key = RSAKey.from_private_key(pkey_file, password=ssh_key_password)
-        log.info("SSH-ключ успешно расшифрован и подготовлен.")
-
         tunnel_server = SSHTunnelForwarder(
-            (ssh_host, 22),
+            (ssh_host, ssh_port), # <<< ПЕРЕДАЕМ ХОСТ И НОВЫЙ ПОРТ
             ssh_username=ssh_user,
-            ssh_pkey=private_key,
+            ssh_password=ssh_password,
             remote_bind_address=(db_host_remote, db_port_remote)
         )
 
@@ -54,6 +49,7 @@ def start_ssh_tunnel():
     except Exception as e:
         log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось запустить SSH-туннель. {e}", exc_info=True)
         tunnel_server = None
+
 
 def get_db_connection():
     """Устанавливает и возвращает соединение с БД через SSH-туннель."""
