@@ -1,14 +1,13 @@
 # app/handlers/security.py
-# Обработчики, отвечающие за безопасность и управление участниками.
 import os
 import time
 import logging
 from ..database import queries
-from app.services import sync_editors_list
+from ..services import sync_editors_list
 
 log = logging.getLogger(__name__)
 
-# --- 1. Загружаем переменные окружения ---
+# --- Основные переменные ---
 EDITORS_CHAT_ID = os.getenv("EDITORS_GROUP_ID")
 OTHER_CHAT_IDS = os.getenv("ALLOWED_CHAT_IDS", "").split(',')
 
@@ -22,6 +21,8 @@ log.info(f"Загружен ID редакторского чата: {EDITORS_CHA
 log.info(f"Загружен список остальных чатов/каналов: {OTHER_CHAT_IDS}")
 log.info(f"Полный белый список для сканирования: {FULL_WHITELIST}")
 
+
+# --- Основные функции ---
 
 def is_chat_allowed(chat_id):
     """Проверяет, находится ли ID чата в полном белом списке."""
@@ -55,9 +56,10 @@ def handle_editor_exit(bot, update):
         log.error(f"Не удалось отправить отчет о безопасности. Ошибка: {e}")
 
 
-def register_security_handlers(bot):
-    """Регистрирует обработчики для безопасности."""
+# --- Регистрация обработчиков ---
 
+def register_security_handlers(bot):
+    """Регистрирует основные обработчики для безопасности."""
     @bot.chat_member_handler()
     def handle_chat_member_updates(update):
         if not is_chat_allowed(update.chat.id):
@@ -72,13 +74,20 @@ def register_security_handlers(bot):
                 handle_editor_exit(bot, update)
 
 def register_sync_handler(bot):
+    """Регистрирует отдельный обработчик для команды синхронизации."""
     @bot.message_handler(commands=['sync_editors'], chat_types=['private'])
     def sync_command(message):
         user_id = message.from_user.id
 
-        # Проверяем, является ли пользователь исполнителем
-        editor = queries.EditorModel.find_by_id(user_id) # Предполагается, что у Вас будет такая модель
-        if not editor or editor.get('role') != 'executor':
+        # Проверка прав по ID Исполнителя из переменных окружения
+        try:
+            EXECUTOR_ID = int(os.getenv("EXECUTOR_ID", "0"))
+            if user_id != EXECUTOR_ID:
+                bot.reply_to(message, "Эта команда доступна только Исполнителю.")
+                return
+        except (ValueError, TypeError):
+            log.error("Переменная EXECUTOR_ID не установлена или имеет неверный формат.")
+            bot.reply_to(message, "Ошибка конфигурации: не удалось проверить права доступа.")
             return
 
         bot.reply_to(message, "Начинаю ручную синхронизацию списка редакторов...")
