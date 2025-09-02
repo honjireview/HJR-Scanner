@@ -3,6 +3,8 @@ import os
 import logging
 from flask import Flask, request, abort
 from telebot import TeleBot, types
+from threading import Thread # <-- Добавьте этот импорт
+from .services import sync_editors_list # <-- Добавьте этот импорт
 
 # --- 1. Настройка логирования и чтение переменных окружения ---
 logging.basicConfig(
@@ -23,6 +25,25 @@ if not SECRET:
 # --- 2. Инициализация ---
 bot = TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
+
+def run_on_startup():
+    """Задачи, которые выполняются один раз при запуске бота."""
+    import time
+    time.sleep(3) # Небольшая задержка, чтобы дать другим сервисам запуститься
+    log.info("Запуск первоначальной синхронизации списка редакторов...")
+    try:
+        sync_editors_list(bot)
+    except Exception as e:
+        log.error(f"Первоначальная синхронизация редакторов провалилась: {e}", exc_info=True)
+
+startup_thread = Thread(target=run_on_startup)
+startup_thread.start()
+# --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
+# --- 3. Регистрация обработчиков --- (теперь пункт 3)
+from .handlers import register_all_handlers
+register_all_handlers(bot)
+log.info("Все обработчики успешно зарегистрированы.")
 
 # --- 3. Регистрация обработчиков ---
 from .handlers import register_all_handlers

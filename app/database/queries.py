@@ -109,3 +109,60 @@ def log_chat_member_update(update):
         'actor_user_id': update.from_user.id
     }
     _send_request("log_chat_member_update", payload, f"chat_member_update for user {update.new_chat_member.user.id}")
+
+def update_editor_list(editors_with_roles: list):
+    """
+    Полностью перезаписывает список редакторов в БД, сохраняя их статус неактивности.
+    """
+    conn = get_db_connection()
+    if not conn:
+        log.error("update_editor_list: нет соединения с БД")
+        return
+
+    try:
+        with conn.cursor() as cur:
+            # 1. Получаем существующих редакторов, чтобы сохранить их статус is_inactive
+            cur.execute("SELECT user_id, is_inactive FROM editors")
+            existing_statuses = {row[0]: row[1] for row in cur.fetchall()}
+
+            # 2. Очищаем таблицу для полного обновления
+            cur.execute("TRUNCATE TABLE editors;")
+
+            if not editors_with_roles:
+                log.warning("Список редакторов для обновления пуст. Таблица очищена.")
+                conn.commit()
+                return
+
+            # 3. Готовим данные для вставки
+            editor_data_to_insert = []
+            for editor_info in editors_with_roles:
+                user = editor_info['user']
+                role = editor_info['role']
+                user_id = user.id
+
+                # Восстанавливаем старый статус неактивности, если он был
+                is_inactive = existing_statuses.get(user_id, False)
+
+                editor_data_to_insert.append((
+                    user_id,
+                    user.username,
+                    user.first_name,
+                    role,
+                    is_inactive
+                ))
+
+            # 4. Вставляем всех редакторов одной командой
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO editors (user_id, username, first_name, role, is_inactive) VALUES %s",
+                editor_data_to_insert
+            )
+            conn.commit()
+            log.info(f"Список редакторов в БД обновлен. Загружено {len(editor_data_to_insert)} пользователей.")
+    except Exception as e:
+        log.error(f"Не удалось обновить список редакторов: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()

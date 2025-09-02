@@ -4,6 +4,7 @@ import os
 import time
 import logging
 from ..database import queries
+from app.services import sync_editors_list
 
 log = logging.getLogger(__name__)
 
@@ -69,3 +70,20 @@ def register_security_handlers(bot):
             is_editors_chat = str(update.chat.id) == EDITORS_CHAT_ID
             if is_exit_event and is_editors_chat:
                 handle_editor_exit(bot, update)
+
+def register_sync_handler(bot):
+    @bot.message_handler(commands=['sync_editors'], chat_types=['private'])
+    def sync_command(message):
+        user_id = message.from_user.id
+
+        # Проверяем, является ли пользователь исполнителем
+        editor = queries.EditorModel.find_by_id(user_id) # Предполагается, что у Вас будет такая модель
+        if not editor or editor.get('role') != 'executor':
+            return
+
+        bot.reply_to(message, "Начинаю ручную синхронизацию списка редакторов...")
+        count, error = sync_editors_list(bot)
+        if error:
+            bot.send_message(message.chat.id, f"Ошибка при синхронизации: {error}")
+        else:
+            bot.send_message(message.chat.id, f"Синхронизация завершена. В базу добавлено/обновлено {count} редакторов.")

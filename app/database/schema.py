@@ -36,5 +36,16 @@ DB_SCHEMA = """
                                                            user_username TEXT,
                                                            event_type TEXT NOT NULL,
                                                            actor_user_id BIGINT
-            ); \
+            );
+
+-- --- НАЧАЛО ИЗМЕНЕНИЙ: Новая таблица для редакторов ---
+            CREATE TABLE IF NOT EXISTS editors (
+                                                   user_id BIGINT PRIMARY KEY,
+                                                   username TEXT,
+                                                   first_name TEXT,
+                                                   role TEXT NOT NULL DEFAULT 'editor',
+                                                   is_inactive BOOLEAN DEFAULT FALSE,
+                                                   added_at TIMESTAMPTZ DEFAULT NOW()
+                );
+-- --- КОНЕЦ ИЗМЕНЕНИЙ --- \
             """

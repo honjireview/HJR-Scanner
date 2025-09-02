@@ -1,4 +1,4 @@
-# Этот файл импортирует и регистрирует все обработчики.
+# app/handlers/__init__.py
 from .logging import register_logging_handlers
 from .security import register_security_handlers
 
