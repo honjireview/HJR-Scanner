@@ -1,14 +1,21 @@
 # app/main.py
-# Этот файл отвечает ТОЛЬКО за запуск. Gunicorn будет использовать его.
-from .bot import app, bot, TOKEN # Импортируем 'app' для Gunicorn
-from app.setup import initialize_database_schema # <<< ДОБАВЛЯЕМ НОВЫЙ ИМПОРТ
+from .bot import app
+from app.setup import initialize_database_schema
 import os
+import logging
+
+log = logging.getLogger(__name__)
 
 # --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ПРИ СТАРТЕ ---
-initialize_database_schema() # <<< ДОБАВЛЯЕМ ВЫЗОВ ФУНКЦИИ
+try:
+    initialize_database_schema()
+except Exception as e:
+    # --- ИЗМЕНЕНИЕ: Бот больше не падает, а выводит критическую ошибку и продолжает работу ---
+    log.critical(f"!!! ВНИМАНИЕ: НЕ УДАЛОСЬ ИНИЦИАЛИЗИРОВАТЬ СХЕМУ БД !!!")
+    log.critical(f"Бот будет работать, но запись в базу данных НЕВОЗМОЖНА до устранения проблемы.")
+    log.critical(f"Ошибка: {e}")
 # ---------------------------------------------
 
-# Этот блок нужен только для локального запуска, на Railway он не используется
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

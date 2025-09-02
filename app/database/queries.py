@@ -1,26 +1,39 @@
-# app/database/queries.py (Полная версия с расширенным логированием)
+# app/database/queries.py (Полная отказоустойчивая версия)
 import os
 import requests
 import logging
 import json
 from datetime import datetime
 
-# --- Настройка ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - [BOT-CLIENT] %(message)s')
 log = logging.getLogger(__name__)
 
+# --- Настройка ---
 API_BASE_URL = os.getenv("AHOST_API_URL")
 API_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN")
+HEADERS = {'Authorization': f'Bearer {API_SECRET_TOKEN}', 'Content-Type': 'application/json'}
 
-if not API_BASE_URL or not API_SECRET_TOKEN:
-    log.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменные API (AHOST_API_URL, API_SECRET_TOKEN) не заданы!")
+def _send_request(endpoint, payload, log_ref):
+    """Внутренняя функция для отправки запросов с защитой от ошибок."""
+    if not API_BASE_URL or not API_SECRET_TOKEN:
+        log.error(f"Невозможно отправить лог для {log_ref}: переменные API не установлены.")
+        return
 
-HEADERS = {
-    'Authorization': f'Bearer {API_SECRET_TOKEN}',
-    'Content-Type': 'application/json'
-}
+    # Безопасное формирование URL (убирает лишний слэш)
+    full_url = API_BASE_URL.rstrip('/') + f"/{endpoint}"
 
-# --- Вспомогательные функции ---
+    try:
+        response = requests.post(full_url, data=json.dumps(payload), headers=HEADERS, timeout=15)
+
+        # Бот больше не падает. Он проверяет статус и логирует ошибку, продолжая работу.
+        if response.status_code != 200:
+            log.error(f"ОШИБКА API при логировании {log_ref}: Статус {response.status_code}. Ответ: {response.text}")
+        else:
+            log.info(f"Лог для {log_ref} успешно отправлен на API.")
+
+    except requests.exceptions.RequestException as e:
+        log.error(f"ОШИБКА СЕТИ при отправке лога для {log_ref}: {e}")
+
+# --- Вспомогательные функции сериализации ---
 def serialize_user(user_obj):
     if not user_obj: return None
     return {'id': user_obj.id, 'is_bot': user_obj.is_bot, 'first_name': user_obj.first_name, 'username': user_obj.username}
@@ -29,49 +42,38 @@ def serialize_chat(chat_obj):
     if not chat_obj: return None
     return {'id': chat_obj.id, 'type': chat_obj.type, 'title': chat_obj.title}
 
-def _send_request(endpoint, payload, message_ref):
-    """Внутренняя функция для отправки и детального логирования запросов."""
-    if not API_BASE_URL: return
-
-    full_url = f"{API_BASE_URL}/{endpoint}"
-
-    log.info(f"--- НАЧАЛО ОТПРАВКИ ЗАПРОСА ДЛЯ {message_ref} ---")
-    log.info(f"ДЕБАГ: Целевой URL: {full_url}")
-    log.info(f"ДЕБАГ: Отправляемые заголовки: {HEADERS}")
-    log.info(f"ДЕБАГ: Отправляемые данные (payload): {json.dumps(payload, indent=2)}")
-
-    try:
-        response = requests.post(full_url, data=json.dumps(payload), headers=HEADERS, timeout=20)
-        log.info(f"ДЕБАГ: Ответ от сервера получен. Статус-код: {response.status_code}")
-        log.info(f"ДЕБАГ: Тело ответа от сервера: {response.text}")
-        response.raise_for_status()
-        log.info(f"УСПЕХ: Запрос для {message_ref} успешно обработан сервером.")
-    except requests.exceptions.RequestException as e:
-        log.error(f"КРИТИЧЕСКАЯ ОШИБКА: Запрос для {message_ref} провалился. Ошибка: {e}", exc_info=True)
-    finally:
-        log.info(f"--- КОНЕЦ ОБРАБОТКИ ЗАПРОСА ДЛЯ {message_ref} ---")
-
-# --- Основные функции ---
+# --- Основные функции (полная версия) ---
 def init_db():
-    log.info("Инициализация БД через API не требуется.")
+    # Эта функция больше не нужна, так как инициализация происходит при старте,
+    # но оставляем ее пустой для совместимости, если где-то есть ее вызовы.
     pass
 
 def log_new_message(message):
     topic_id, topic_name = (None, None)
     if hasattr(message, 'is_topic_message') and message.is_topic_message:
         topic_id = message.message_thread_id
-        topic_name = "General"
-        if (message.reply_to_message and hasattr(message.reply_to_message, 'forum_topic_created') and message.reply_to_message.forum_topic_created):
+        if (message.reply_to_message and hasattr(message.reply_to_message, 'forum_topic_created') and
+                message.reply_to_message.forum_topic_created):
             topic_name = message.reply_to_message.forum_topic_created.name
+        else:
+            topic_name = "General"
 
     fwd_chat_id, fwd_msg_id = (message.forward_from_chat.id, message.forward_from_message_id) if message.forward_from_chat else (None, None)
+
     file_id = None
     if message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
         media = getattr(message, message.content_type)
-        if isinstance(media, list): file_id = media[-1].file_id if media else None
-        elif hasattr(media, 'file_id'): file_id = media.file_id
+        if isinstance(media, list):
+            file_id = media[-1].file_id if media else None
+        elif hasattr(media, 'file_id'):
+            file_id = media.file_id
 
-    author_data = serialize_user(message.from_user) or {'id': None, 'username': None, 'first_name': getattr(message, 'author_signature', None), 'is_bot': None}
+    author = message.from_user
+    author_data = serialize_user(author) or {
+        'id': None, 'username': None,
+        'first_name': getattr(message, 'author_signature', None),
+        'is_bot': None
+    }
 
     payload = {
         'message_id': message.message_id, 'chat': serialize_chat(message.chat), 'date': message.date,
@@ -84,17 +86,22 @@ def log_new_message(message):
 
 def log_edited_message(message):
     payload = {
-        'message_id': message.message_id, 'chat_id': message.chat.id,
-        'edit_date': message.edit_date, 'text': message.text or message.caption
+        'message_id': message.message_id,
+        'chat_id': message.chat.id,
+        'edit_date': message.edit_date,
+        'text': message.text or message.caption
     }
     _send_request("log_edited_message", payload, f"edited_message_id {message.message_id}")
 
 def log_chat_member_update(update):
     old_status, new_status = update.old_chat_member.status, update.new_chat_member.status
     event_type = "unknown"
-    if old_status in ['left', 'kicked'] and new_status in ['member', 'administrator', 'creator']: event_type = "joined"
-    elif old_status in ['member', 'administrator', 'creator'] and new_status in ['left', 'kicked']: event_type = "left"
-    if event_type == "unknown": return
+    if old_status in ['left', 'kicked'] and new_status in ['member', 'administrator', 'creator']:
+        event_type = "joined"
+    elif old_status in ['member', 'administrator', 'creator'] and new_status in ['left', 'kicked']:
+        event_type = "left"
+    if event_type == "unknown":
+        return
 
     payload = {
         'date': update.date, 'chat': serialize_chat(update.chat),
