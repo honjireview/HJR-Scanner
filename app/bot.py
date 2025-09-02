@@ -1,9 +1,8 @@
-# app/bot.py
+# app/bot.py (Исправленная версия)
 import os
 import logging
 from flask import Flask, request, abort
 from telebot import TeleBot, types
-from .database.queries import start_ssh_tunnel # <<< ИМПОРТИРУЕМ НАШУ НОВУЮ ФУНКЦИЮ
 
 # --- 1. Настройка логирования и чтение переменных окружения ---
 logging.basicConfig(
@@ -23,16 +22,12 @@ if not TOKEN:
 bot = TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- 3. ЗАПУСК SSH-ТУННЕЛЯ ---
-# Эта функция выполнится один раз при старте вашего приложения на Railway
-start_ssh_tunnel()
-
-# --- 4. Регистрация обработчиков ---
+# --- 3. Регистрация обработчиков ---
 from .handlers import register_all_handlers
 register_all_handlers(bot)
 log.info("Все обработчики успешно зарегистрированы.")
 
-# --- 5. Маршрут для вебхука (остается без изменений) ---
+# --- 4. Маршрут для вебхука (остается без изменений) ---
 @app.route('/telegram/hjr-scanner', methods=['POST'])
 def webhook():
     log.info("--- START WEBHOOK PROCESSING ---")
