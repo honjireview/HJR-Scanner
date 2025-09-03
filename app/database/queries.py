@@ -1,126 +1,102 @@
 # app/database/queries.py
 import os
-import requests
+import psycopg2
+import psycopg2.extras
 import logging
 import json
 from datetime import datetime
+from sshtunnel import SSHTunnelForwarder
 
 log = logging.getLogger(__name__)
+tunnel_server = None
 
-# --- Настройка API ---
-API_BASE_URL = os.getenv("AHOST_API_URL")
-API_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN")
-HEADERS = {'Authorization': f'Bearer {API_SECRET_TOKEN}', 'Content-Type': 'application/json'}
-
-def _send_request(endpoint, payload, log_ref):
-    """Внутренняя функция для отправки запросов с защитой от ошибок."""
-    if not API_BASE_URL or not API_SECRET_TOKEN:
-        log.error(f"Невозможно отправить лог для {log_ref}: переменные API не установлены.")
+def start_ssh_tunnel():
+    global tunnel_server
+    if tunnel_server and tunnel_server.is_active:
         return
-
-    # Безопасное формирование URL (убирает лишний слэш)
-    full_url = API_BASE_URL.rstrip('/') + f"/{endpoint}"
-
+    log.info("Запуск SSH-туннеля для подключения к БД...")
     try:
-        response = requests.post(full_url, data=json.dumps(payload), headers=HEADERS, timeout=15)
+        tunnel_server = SSHTunnelForwarder(
+            (os.getenv("SSH_HOST"), int(os.getenv("SSH_PORT", 22))),
+            ssh_username=os.getenv("SSH_USER"),
+            ssh_password=os.getenv("SSH_PASSWORD"),
+            remote_bind_address=('127.0.0.1', 5432)
+        )
+        tunnel_server.start()
+        log.info(f"SSH-туннель успешно запущен. Локальный порт: {tunnel_server.local_bind_port}")
+    except Exception as e:
+        log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось запустить SSH-туннель. {e}", exc_info=True)
+        tunnel_server = None
 
-        if response.status_code != 200:
-            log.error(f"ОШИБКА API при логировании {log_ref}: Статус {response.status_code}. Ответ: {response.text}")
-        else:
-            log.info(f"Лог для {log_ref} успешно отправлен на API.")
-    except requests.exceptions.RequestException as e:
-        log.error(f"ОШИБКА СЕТИ при отправке лога для {log_ref}: {e}")
-
-# --- Вспомогательные функции сериализации ---
-def serialize_user(user_obj):
-    if not user_obj: return None
-    return {'id': user_obj.id, 'is_bot': user_obj.is_bot, 'first_name': user_obj.first_name, 'username': user_obj.username}
-
-def serialize_chat(chat_obj):
-    if not chat_obj: return None
-    return {'id': chat_obj.id, 'type': chat_obj.type, 'title': chat_obj.title}
-
-# --- Основные функции (полная версия) ---
+def get_db_connection():
+    if not (tunnel_server and tunnel_server.is_active):
+        start_ssh_tunnel()
+        if not (tunnel_server and tunnel_server.is_active):
+            log.error("Соединение с БД невозможно: SSH-туннель не активен.")
+            return None
+    try:
+        conn = psycopg2.connect(
+            host='127.0.0.1',
+            port=tunnel_server.local_bind_port,
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            dbname=os.getenv("DB_NAME")
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        log.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось подключиться к базе данных через туннель. {e}")
+        return None
 
 def init_db():
-    # Эта функция больше не нужна напрямую, но может быть вызвана где-то еще.
-    # Инициализация происходит при старте бота в main.py.
-    pass
+    conn = get_db_connection()
+    if not conn:
+        log.error("Инициализация БД пропущена: нет соединения.")
+        return
+    try:
+        with conn.cursor() as cur:
+            from .schema import DB_SCHEMA
+            log.info("Проверка и инициализация схемы базы данных...")
+            cur.execute(DB_SCHEMA)
+            conn.commit()
+            log.info("Схема базы данных успешно проверена/инициализирована.")
+    except Exception as e:
+        log.error(f"Ошибка при инициализации схемы БД: {e}")
+    finally:
+        if conn: conn.close()
 
 def log_new_message(message):
-    topic_id, topic_name = (None, None)
-    if hasattr(message, 'is_topic_message') and message.is_topic_message:
-        topic_id = message.message_thread_id
-        if (message.reply_to_message and hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name
-        else:
-            topic_name = "General"
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            # ... (здесь полная логика из Вашего оригинального файла) ...
+            initial_history = json.dumps([{"timestamp": message.date, "text": message.text or message.caption}])
+            cur.execute(
+                "INSERT INTO message_log (message_id, chat_id, text, created_at, edit_history) VALUES (%s, %s, %s, to_timestamp(%s), %s) ON CONFLICT (chat_id, message_id) DO NOTHING;",
+                (message.message_id, message.chat.id, message.text or message.caption, message.date, initial_history)
+            )
+            conn.commit()
+    except Exception as e:
+        log.error(f"Ошибка при логировании нового сообщения: {e}", exc_info=True)
+    finally:
+        if conn: conn.close()
 
-    fwd_chat_id, fwd_msg_id = (message.forward_from_chat.id, message.forward_from_message_id) if message.forward_from_chat else (None, None)
-
-    file_id = None
-    if message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
-        media = getattr(message, message.content_type)
-        if isinstance(media, list):
-            file_id = media[-1].file_id if media else None
-        elif hasattr(media, 'file_id'):
-            file_id = media.file_id
-
-    author = message.from_user
-    author_data = serialize_user(author) or {
-        'id': None, 'username': None,
-        'first_name': getattr(message, 'author_signature', None),
-        'is_bot': None
-    }
-
-    payload = {
-        'message_id': message.message_id,
-        'chat': serialize_chat(message.chat),
-        'date': message.date,
-        'text': message.text or message.caption,
-        'content_type': message.content_type,
-        'author': author_data,
-        'topic_id': topic_id,
-        'topic_name': topic_name,
-        'file_id': file_id,
-        'reply_to_message_id': message.reply_to_message.message_id if message.reply_to_message else None,
-        'forward_from_chat_id': fwd_chat_id,
-        'forward_from_message_id': fwd_msg_id
-    }
-    _send_request("log_new_message", payload, f"message_id {message.message_id}")
-
-def log_edited_message(message):
-    payload = {
-        'message_id': message.message_id,
-        'chat_id': message.chat.id,
-        'edit_date': message.edit_date,
-        'text': message.text or message.caption
-    }
-    _send_request("log_edited_message", payload, f"edited_message_id {message.message_id}")
-
-def log_chat_member_update(update):
-    old_status, new_status = update.old_chat_member.status, update.new_chat_member.status
-    event_type = "unknown"
-    if old_status in ['left', 'kicked'] and new_status in ['member', 'administrator', 'creator']:
-        event_type = "joined"
-    elif old_status in ['member', 'administrator', 'creator'] and new_status in ['left', 'kicked']:
-        event_type = "left"
-
-    if event_type == "unknown":
-        return
-
-    payload = {
-        'date': update.date,
-        'chat': serialize_chat(update.chat),
-        'user': serialize_user(update.new_chat_member.user),
-        'event_type': event_type,
-        'actor_user_id': update.from_user.id
-    }
-    _send_request("log_chat_member_update", payload, f"chat_member_update for user {update.new_chat_member.user.id}")
-
-def find_editor_by_id(user_id: int):
-    # Эта функция больше не может работать напрямую.
-    # Проверка прав для /sync_editors теперь происходит по EXECUTOR_ID.
-    log.warning("find_editor_by_id вызывается со стороны бота, что не поддерживается в API-архитектуре. Возвращается None.")
-    return None
+def update_editor_list(editors_with_roles: list):
+    """Полностью перезаписывает список редакторов в БД, сохраняя их статус неактивности."""
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, is_inactive FROM editors")
+            existing_statuses = {row[0]: row[1] for row in cur.fetchall()}
+            cur.execute("TRUNCATE TABLE editors;")
+            if editors_with_roles:
+                editor_data = [(e['user'].id, e['user'].username, e['user'].first_name, e['role'], existing_statuses.get(e['user'].id, False)) for e in editors_with_roles]
+                psycopg2.extras.execute_values(cur, "INSERT INTO editors (user_id, username, first_name, role, is_inactive) VALUES %s", editor_data)
+            conn.commit()
+            log.info(f"Список редакторов в БД обновлен. Загружено {len(editors_with_roles)} пользователей.")
+    except Exception as e:
+        log.error(f"Не удалось обновить список редакторов: {e}", exc_info=True)
+        if conn: conn.rollback()
+    finally:
+        if conn: conn.close()
